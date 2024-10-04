@@ -1,13 +1,9 @@
 use clap::Parser;
 use image::codecs::gif::GifDecoder;
-use image::AnimationDecoder;
-use image::Rgba;
+use image::{AnimationDecoder, Rgba};
 use indicatif::ProgressBar;
 use std::error::Error;
-use std::io;
-use std::io::BufRead;
-use std::io::Cursor;
-use std::io::Write;
+use std::io::{self, BufRead, Cursor, Write};
 use std::net::TcpStream;
 
 #[derive(Copy, Clone)]
@@ -78,11 +74,8 @@ struct Config {
 }
 
 fn generate_pixel_string(pixels: &[Pixel]) -> Vec<u8> {
-    // Allocate byte buffer with matching size
     let mut pixel_buffer = Vec::new();
-
     for pixel in pixels {
-        // Mutable borrow string
         pixel
             .write(&mut pixel_buffer)
             .expect("Failed to write pixel");
@@ -175,7 +168,6 @@ fn main() -> Result<(), Box<dyn Error>> {
         .collect::<Result<Vec<_>, _>>()
         .expect("Failed to decode gif into frames");
 
-    //let canvas_size = get_canvas_size(&args.url)
     let canvas_size = get_canvas_size(&args.url)?;
 
     let mut position = Coordinates {
@@ -183,7 +175,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         y: args.y,
     };
 
-    let speed: u16 = 15;
+    let speed: u16 = 15; // Pixel per sec
 
     let bar = ProgressBar::new(canvas_size.0 as u64);
     loop {
