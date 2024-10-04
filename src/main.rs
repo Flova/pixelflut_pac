@@ -2,7 +2,10 @@ use clap::Parser;
 use image::codecs::gif::GifDecoder;
 use image::AnimationDecoder;
 use image::Rgba;
+use indicatif::ProgressBar;
+use std::error::Error;
 use std::io;
+use std::io::BufRead;
 use std::io::Cursor;
 use std::io::Write;
 use std::net::TcpStream;
@@ -107,7 +110,6 @@ fn send_pixels(ip: &str, pixels: &[Pixel]) -> io::Result<()> {
 
     // Send the string to the server
     let mut stream = TcpStream::connect(ip)?;
-    println!("Successfully connected to {}", ip);
 
     let recv_thread: std::thread::JoinHandle<()> = std::thread::spawn({
         let mut stream: TcpStream = stream.try_clone().unwrap();
@@ -126,7 +128,41 @@ fn send_pixels(ip: &str, pixels: &[Pixel]) -> io::Result<()> {
     Ok(())
 }
 
-fn main() {
+fn get_canvas_size(ip: &str) -> Result<(u16, u16), &str> {
+    let mut stream = TcpStream::connect(ip).map_err(|_| "Failed to connect to the server")?;
+
+    let mut reader = io::BufReader::new(stream.try_clone().expect("Failed to clone stream"));
+
+    stream
+        .write_all(b"SIZE\n")
+        .map_err(|_| "Failed to send SIZE request")?;
+    stream
+        .shutdown(std::net::Shutdown::Write)
+        .expect("Failed to shutdown stream");
+
+    let mut buffer = String::new();
+    reader
+        .read_line(&mut buffer)
+        .map_err(|_| "Failed to read the server response from the stream")?;
+
+    let mut parts = buffer.split_whitespace();
+
+    parts.next().ok_or("Size response too short")?;
+
+    let width = parts
+        .next()
+        .and_then(|f| f.parse::<u16>().ok())
+        .ok_or("Failed parsing of size response")?;
+
+    let height = parts
+        .next()
+        .and_then(|f| f.parse::<u16>().ok())
+        .ok_or("Failed parsing of size response")?;
+
+    Ok((width, height))
+}
+
+fn main() -> Result<(), Box<dyn Error>> {
     println!("Start pixel client");
 
     // Parse the command line arguments
@@ -139,24 +175,31 @@ fn main() {
         .collect::<Result<Vec<_>, _>>()
         .expect("Failed to decode gif into frames");
 
+    //let canvas_size = get_canvas_size(&args.url)
+    let canvas_size = get_canvas_size(&args.url)?;
+
     let mut position = Coordinates {
         x: args.x,
         y: args.y,
     };
 
+    let speed: u16 = 15;
+
+    let bar = ProgressBar::new(canvas_size.0 as u64);
     loop {
         for frame in gif_frames.iter() {
             let frame = serialize_frame(frame, position);
 
-            match send_pixels(&args.url, &frame) {
-                Ok(_) => {
-                    println!("Successfully sent pixels");
-                }
-                Err(e) => {
-                    println!("Failed to send pixels: {}", e);
-                }
+            if let Err(e) = send_pixels(&args.url, &frame) {
+                eprintln!("Failed to send pixels: {}", e);
             };
-            position.x = (position.x + 15) % 1920
+            position.x += speed;
+            if position.x >= canvas_size.0 {
+                position.x = 0;
+                bar.reset();
+            } else {
+                bar.inc(speed as u64);
+            }
         }
     }
 }
