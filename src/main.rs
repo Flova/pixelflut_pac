@@ -1,14 +1,11 @@
 use clap::Parser;
-use std::io::Write;
+use image::codecs::gif::GifDecoder;
+use image::AnimationDecoder;
+use image::Rgba;
 use std::io;
+use std::io::Cursor;
+use std::io::Write;
 use std::net::TcpStream;
-
-#[derive(Copy, Clone)]
-struct ColoredSquare {
-    origin: Coordinates,
-    size: u16,
-    color: Color,
-}
 
 #[derive(Copy, Clone)]
 struct Coordinates {
@@ -32,6 +29,16 @@ struct Color {
     r: u8,
     g: u8,
     b: u8,
+}
+
+impl From<Rgba<u8>> for Color {
+    fn from(rgba: Rgba<u8>) -> Self {
+        Color {
+            r: rgba[0],
+            g: rgba[1],
+            b: rgba[2],
+        }
+    }
 }
 
 struct Pixel {
@@ -61,20 +68,10 @@ impl Pixel {
 struct Config {
     #[arg(short, long, default_value = "pixelflut:1234")]
     url: String,
-    #[arg(default_value = "1000")]
-    width: u16,
-    #[arg(default_value = "1000")]
-    height: u16,
     #[arg(default_value = "0")]
     x: u16,
     #[arg(default_value = "0")]
     y: u16,
-    #[arg(default_value = "255")]
-    r: u8,
-    #[arg(default_value = "255")]
-    g: u8,
-    #[arg(default_value = "255")]
-    b: u8,
 }
 
 fn generate_pixel_string(pixels: &[Pixel]) -> Vec<u8> {
@@ -90,15 +87,16 @@ fn generate_pixel_string(pixels: &[Pixel]) -> Vec<u8> {
     pixel_buffer
 }
 
-fn serialize_square(square: ColoredSquare) -> Vec<Pixel> {
-    let mut pixels = Vec::new();
-    for x in 0..square.size {
-        for y in 0..square.size {
-            pixels.push(Pixel {
-                point: Coordinates { x, y } + square.origin,
-                rgb: square.color,
-            });
-        }
+fn serialize_frame(frame: &image::Frame, position: Coordinates) -> Vec<Pixel> {
+    let mut pixels = Vec::with_capacity(frame.buffer().len());
+    for (x, y, &pixel) in frame.buffer().enumerate_pixels() {
+        pixels.push(Pixel {
+            point: Coordinates {
+                x: x as u16,
+                y: y as u16,
+            } + position,
+            rgb: pixel.into(),
+        });
     }
     pixels
 }
@@ -134,27 +132,31 @@ fn main() {
     // Parse the command line arguments
     let args = Config::parse();
 
-    // Generate a black square of 1000x1000 pixels
-    let pixels = serialize_square(ColoredSquare {
-        origin: Coordinates {
-            x: args.x,
-            y: args.y,
-        },
-        size: args.width,
-        color: Color {
-            r: args.r,
-            g: args.g,
-            b: args.b,
-        },
-    });
+    let gif_decoder = GifDecoder::new(Cursor::new(include_bytes!("nyan.gif")))
+        .expect("Failed to decode gif file");
+    let gif_frames = gif_decoder
+        .into_frames()
+        .collect::<Result<Vec<_>, _>>()
+        .expect("Failed to decode gif into frames");
 
-    // Send the pixels to the server
-    match send_pixels(&args.url, &pixels) {
-        Ok(_) => {
-            println!("Successfully sent pixels");
-        }
-        Err(e) => {
-            println!("Failed to send pixels: {}", e);
+    let mut position = Coordinates {
+        x: args.x,
+        y: args.y,
+    };
+
+    loop {
+        for frame in gif_frames.iter() {
+            let frame = serialize_frame(frame, position);
+
+            match send_pixels(&args.url, &frame) {
+                Ok(_) => {
+                    println!("Successfully sent pixels");
+                }
+                Err(e) => {
+                    println!("Failed to send pixels: {}", e);
+                }
+            };
+            position.x = (position.x + 15) % 1920
         }
     }
 }
