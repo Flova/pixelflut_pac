@@ -73,34 +73,25 @@ struct Config {
     y: u16,
 }
 
-fn generate_pixel_string(pixels: &[Pixel]) -> Vec<u8> {
-    let mut pixel_buffer = Vec::new();
-    for pixel in pixels {
-        pixel
-            .write(&mut pixel_buffer)
-            .expect("Failed to write pixel");
-    }
-    pixel_buffer
-}
-
-fn serialize_frame(frame: &image::Frame, position: Coordinates) -> Vec<Pixel> {
-    let mut pixels = Vec::with_capacity(frame.buffer().len());
-    for (x, y, &pixel) in frame.buffer().enumerate_pixels() {
-        pixels.push(Pixel {
+fn write_frame_to_stream<T: Write>(
+    frame: &image::Frame,
+    position: Coordinates,
+    buffer: &mut T,
+) -> io::Result<()> {
+    for (x, y, &color) in frame.buffer().enumerate_pixels() {
+        Pixel {
             point: Coordinates {
                 x: x as u16,
                 y: y as u16,
             } + position,
-            rgb: pixel.into(),
-        });
+            rgb: color.into(),
+        }
+        .write(buffer)?;
     }
-    pixels
+    Ok(())
 }
 
-fn send_pixels(ip: &str, pixels: &[Pixel]) -> io::Result<()> {
-    // Generate the string to send to the server
-    let pixel_string = generate_pixel_string(pixels);
-
+fn send_frame(ip: &str, frame: &image::Frame, position: Coordinates) -> io::Result<()> {
     // Send the string to the server
     let mut stream = TcpStream::connect(ip)?;
 
@@ -112,8 +103,8 @@ fn send_pixels(ip: &str, pixels: &[Pixel]) -> io::Result<()> {
         }
     });
 
-    // Send the string to the server
-    stream.write_all(pixel_string.as_slice())?;
+    write_frame_to_stream(frame, position, &mut stream)?;
+
     stream.shutdown(std::net::Shutdown::Write).unwrap();
 
     recv_thread.join().unwrap();
@@ -180,10 +171,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     let bar = ProgressBar::new(canvas_size.0 as u64);
     loop {
         for frame in gif_frames.iter() {
-            let frame = serialize_frame(frame, position);
-
-            if let Err(e) = send_pixels(&args.url, &frame) {
-                eprintln!("Failed to send pixels: {}", e);
+            if let Err(e) = send_frame(&args.url, &frame, position) {
+                eprintln!("Failed to send frame: {}", e);
             };
             position.x += speed;
             if position.x >= canvas_size.0 {
