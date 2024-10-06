@@ -712,6 +712,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "57c0d7b74b563b49d38dae00a0c37d4d6de9b432382b2892f0574ddcae73fd0a"
 
 [[package]]
+name = "pixelflut_nyan"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "image",
+ "indicatif",
+]
+
+[[package]]
 name = "pkg-config"
 version = "0.3.31"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1041,15 +1050,6 @@ dependencies = [
  "flate2",
  "jpeg-decoder",
  "weezl",
-]
-
-[[package]]
-name = "tmp_project"
-version = "0.1.0"
-dependencies = [
- "clap",
- "image",
- "indicatif",
 ]
 
 [[package]]
