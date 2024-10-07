@@ -1,15 +1,18 @@
 use clap::Parser;
+use console::Term;
 use image::codecs::gif::GifDecoder;
+use image::imageops::{flip_horizontal, flip_vertical, resize, rotate90};
 use image::{AnimationDecoder, Rgba};
-use indicatif::ProgressBar;
 use std::error::Error;
 use std::io::{self, BufRead, Cursor, Write};
 use std::net::TcpStream;
+use std::sync::mpsc::channel;
 
 #[derive(Copy, Clone)]
 struct Coordinates {
     x: u16,
     y: u16,
+    bounds: (u16, u16),
 }
 
 impl std::ops::Add<Coordinates> for Coordinates {
@@ -17,8 +20,9 @@ impl std::ops::Add<Coordinates> for Coordinates {
 
     fn add(self, other: Coordinates) -> Coordinates {
         Coordinates {
-            x: self.x + other.x,
-            y: self.y + other.y,
+            x: (self.x + other.x + self.bounds.0) % self.bounds.0,
+            y: (self.y + other.y + self.bounds.1) % self.bounds.1,
+            bounds: self.bounds,
         }
     }
 }
@@ -73,16 +77,25 @@ struct Config {
     y: u16,
 }
 
+enum Direction {
+    Right,
+    Left,
+    Up,
+    Down,
+}
+
 fn write_frame_to_stream<T: Write>(
-    frame: &image::Frame,
+    frame: &image::RgbaImage,
     position: Coordinates,
     buffer: &mut T,
+    canvas_size: (u16, u16),
 ) -> io::Result<()> {
-    for (x, y, &color) in frame.buffer().enumerate_pixels() {
+    for (x, y, &color) in frame.enumerate_pixels() {
         Pixel {
             point: Coordinates {
                 x: x as u16,
                 y: y as u16,
+                bounds: canvas_size,
             } + position,
             rgb: color.into(),
         }
@@ -128,12 +141,95 @@ fn main() -> Result<(), Box<dyn Error>> {
     // Parse the command line arguments
     let args = Config::parse();
 
-    let gif_decoder = GifDecoder::new(Cursor::new(include_bytes!("nyan.gif")))
-        .expect("Failed to decode gif file");
-    let gif_frames = gif_decoder
+    let pacman_size: u32 = 60;
+
+    let (direction_tx, direction_rx) = channel();
+
+    let direction_tx_socket = direction_tx.clone();
+
+    let _input_thread = std::thread::spawn(move || {
+        let term = Term::stdout();
+        loop {
+            // Read character
+            let c = term.read_char().expect("Failed to read input");
+            let direction = match c {
+                'w' => Direction::Up,
+                'a' => Direction::Left,
+                's' => Direction::Down,
+                'd' => Direction::Right,
+                _ => continue,
+            };
+            direction_tx
+                .send(direction)
+                .expect("Failed to move keypress to main thread");
+        }
+    });
+
+    let _input_socket_thread = std::thread::spawn(move || {
+        let listener =
+            std::net::TcpListener::bind("0.0.0.0:1234").expect("Failed to bind to socket");
+        let mut connection_pool = Vec::new();
+        for stream in listener.incoming() {
+            let stream = stream.expect("Failed to get stream");
+            println!(
+                "Remote control connected. (IP: {} | Connection: {})",
+                stream.peer_addr().unwrap(),
+                connection_pool.len()
+            );
+            let tx_handle = direction_tx_socket.clone();
+            connection_pool.push(std::thread::spawn(move || {
+                let mut reader =
+                    io::BufReader::new(stream.try_clone().expect("Failed to clone stream"));
+                loop {
+                    let mut buffer = String::new();
+                    reader
+                        .read_line(&mut buffer)
+                        .expect("Failed to read the server response from the stream");
+
+                    // Break if the connection is closed
+                    if buffer.is_empty() {
+                        println!(
+                            "Remote control disconnected! (IP: {})",
+                            stream.peer_addr().unwrap()
+                        );
+                        break;
+                    }
+
+                    let direction = match buffer.trim() {
+                        "w" => Direction::Up,
+                        "a" => Direction::Left,
+                        "s" => Direction::Down,
+                        "d" => Direction::Right,
+                        _ => continue,
+                    };
+                    tx_handle
+                        .send(direction)
+                        .expect("Failed to move socket input to main thread");
+                }
+            }));
+        }
+    });
+
+    let gif_decoder =
+        GifDecoder::new(Cursor::new(include_bytes!("pac.gif"))).expect("Failed to decode gif file");
+
+    let right_frames = gif_decoder
         .into_frames()
         .collect::<Result<Vec<_>, _>>()
-        .expect("Failed to decode gif into frames");
+        .expect("Failed to decode gif into frames")
+        .iter()
+        .map(|frame| {
+            resize(
+                &frame.clone().into_buffer(),
+                pacman_size,
+                pacman_size,
+                image::imageops::FilterType::Nearest,
+            )
+        })
+        .collect::<Vec<_>>();
+    let left_frames = right_frames.iter().map(flip_horizontal).collect::<Vec<_>>();
+    let down_frames = right_frames.iter().map(rotate90).collect::<Vec<_>>();
+    let up_frames = down_frames.iter().map(flip_vertical).collect::<Vec<_>>();
 
     // Create a connection to the server
     let connection = TcpStream::connect(&args.url)?;
@@ -142,39 +238,58 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let mut buff_writer = io::BufWriter::new(connection);
 
-    let movement_speed: u16 = 205; // Pixel per sec
-    let animation_speed: u16 = 12; // FPS for the GIF
+    let frame_duration = 200;
 
-    let mut x_position_subpixel = args.x as f32;
-    let mut last_time = std::time::Instant::now();
+    let mut position = Coordinates {
+        x: args.x,
+        y: args.y,
+        bounds: canvas_size,
+    };
 
-    let bar = ProgressBar::new(canvas_size.0 as u64);
+    let start_time = std::time::Instant::now();
+    let mut direction = Direction::Right;
+
     loop {
-        for frame in gif_frames.iter() {
-            let position = Coordinates {
-                x: x_position_subpixel as u16,
-                y: args.y,
-            };
+        // Check if there is a new direction
+        if let Ok(new_direction) = direction_rx.try_recv() {
+            direction = new_direction;
+        }
 
-            let start_time = std::time::Instant::now();
-
-            while start_time + std::time::Duration::from_secs_f32(1.0 / animation_speed as f32)
-                > std::time::Instant::now()
-            {
-                write_frame_to_stream(frame, position, &mut buff_writer)?;
+        position = match direction {
+            Direction::Right => {
+                position.x += 1;
+                position
             }
-
-            let now = std::time::Instant::now();
-            let delta_t = now - last_time;
-            last_time = now;
-
-            x_position_subpixel += movement_speed as f32 * delta_t.as_secs_f32();
-            if position.x >= canvas_size.0 {
-                x_position_subpixel = 0.0;
-                bar.reset();
-            } else {
-                bar.set_position(position.x as u64);
+            Direction::Left => {
+                position.x -= 1;
+                position
             }
+            Direction::Up => {
+                position.y -= 1;
+                position
+            }
+            Direction::Down => {
+                position.y += 1;
+                position
+            }
+        };
+
+        let current_frames = match direction {
+            Direction::Right => &right_frames,
+            Direction::Left => &left_frames,
+            Direction::Up => &up_frames,
+            Direction::Down => &down_frames,
+        };
+
+        for _ in 0..10 {
+            let elapsed_time = (std::time::Instant::now() - start_time).as_millis();
+            let frame_idx: usize = (elapsed_time / frame_duration) as usize % current_frames.len();
+            write_frame_to_stream(
+                &current_frames[frame_idx],
+                position,
+                &mut buff_writer,
+                canvas_size,
+            )?;
         }
     }
 }
