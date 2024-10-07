@@ -91,59 +91,35 @@ fn write_frame_to_stream<T: Write>(
     Ok(())
 }
 
-fn send_frame(ip: &str, frame: &image::Frame, position: Coordinates) -> io::Result<()> {
-    // Send the string to the server
-    let mut stream = TcpStream::connect(ip)?;
-
-    let recv_thread: std::thread::JoinHandle<()> = std::thread::spawn({
-        let mut stream: TcpStream = stream.try_clone().unwrap();
-        move || {
-            std::io::copy(&mut stream, &mut std::io::stderr())
-                .expect("Error sending server answer to stdout.");
-        }
-    });
-
-    write_frame_to_stream(frame, position, &mut stream)?;
-
-    stream.shutdown(std::net::Shutdown::Write).unwrap();
-
-    recv_thread.join().unwrap();
-
-    Ok(())
-}
-
-fn get_canvas_size(ip: &str) -> Result<(u16, u16), &str> {
-    let mut stream = TcpStream::connect(ip).map_err(|_| "Failed to connect to the server")?;
-
+fn get_canvas_size(mut stream: &TcpStream) -> (u16, u16) {
     let mut reader = io::BufReader::new(stream.try_clone().expect("Failed to clone stream"));
 
     stream
         .write_all(b"SIZE\n")
-        .map_err(|_| "Failed to send SIZE request")?;
-    stream
-        .shutdown(std::net::Shutdown::Write)
-        .expect("Failed to shutdown stream");
+        .expect("Failed to send size request to the server");
 
     let mut buffer = String::new();
     reader
         .read_line(&mut buffer)
-        .map_err(|_| "Failed to read the server response from the stream")?;
+        .expect("Failed to read the server response from the stream");
 
     let mut parts = buffer.split_whitespace();
 
-    parts.next().ok_or("Size response too short")?;
+    parts
+        .next()
+        .expect("Failed parsing of size response: Response is empty");
 
     let width = parts
         .next()
         .and_then(|f| f.parse::<u16>().ok())
-        .ok_or("Failed parsing of size response")?;
+        .expect("Failed parsing of size response");
 
     let height = parts
         .next()
         .and_then(|f| f.parse::<u16>().ok())
-        .ok_or("Failed parsing of size response")?;
+        .expect("Failed parsing of size response");
 
-    Ok((width, height))
+    (width, height)
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -159,28 +135,45 @@ fn main() -> Result<(), Box<dyn Error>> {
         .collect::<Result<Vec<_>, _>>()
         .expect("Failed to decode gif into frames");
 
-    let canvas_size = get_canvas_size(&args.url)?;
+    // Create a connection to the server
+    let connection = TcpStream::connect(&args.url)?;
 
-    let mut position = Coordinates {
-        x: args.x,
-        y: args.y,
-    };
+    let canvas_size = get_canvas_size(&connection);
 
-    let speed: u16 = 15; // Pixel per sec
+    let mut buff_writer = io::BufWriter::new(connection);
+
+    let movement_speed: u16 = 50; // Pixel per sec
+    let animation_speed: u16 = 12; // FPS for the GIF
+
+    let mut x_position_subpixel = args.x as f32;
+    let mut last_time = std::time::Instant::now();
 
     let bar = ProgressBar::new(canvas_size.0 as u64);
     loop {
+        let position = Coordinates {
+            x: x_position_subpixel as u16,
+            y: args.y,
+        };
+
         for frame in gif_frames.iter() {
-            if let Err(e) = send_frame(&args.url, &frame, position) {
-                eprintln!("Failed to send frame: {}", e);
-            };
-            position.x += speed;
-            if position.x >= canvas_size.0 {
-                position.x = 0;
-                bar.reset();
-            } else {
-                bar.inc(speed as u64);
+            let start_time = std::time::Instant::now();
+
+            while start_time + std::time::Duration::from_secs_f32(1.0 / animation_speed as f32)
+                > std::time::Instant::now()
+            {
+                write_frame_to_stream(frame, position, &mut buff_writer)?;
             }
+        }
+        let now = std::time::Instant::now();
+        let delta_t = now - last_time;
+        last_time = now;
+
+        x_position_subpixel += movement_speed as f32 * delta_t.as_secs_f32();
+        if position.x >= canvas_size.0 {
+            x_position_subpixel = 0.0;
+            bar.reset();
+        } else {
+            bar.set_position(position.x as u64);
         }
     }
 }
