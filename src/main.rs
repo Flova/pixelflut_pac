@@ -142,7 +142,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let mut buff_writer = io::BufWriter::new(connection);
 
-    let movement_speed: u16 = 50; // Pixel per sec
+    let movement_speed: u16 = 205; // Pixel per sec
     let animation_speed: u16 = 12; // FPS for the GIF
 
     let mut x_position_subpixel = args.x as f32;
@@ -150,12 +150,12 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let bar = ProgressBar::new(canvas_size.0 as u64);
     loop {
-        let position = Coordinates {
-            x: x_position_subpixel as u16,
-            y: args.y,
-        };
-
         for frame in gif_frames.iter() {
+            let position = Coordinates {
+                x: x_position_subpixel as u16,
+                y: args.y,
+            };
+
             let start_time = std::time::Instant::now();
 
             while start_time + std::time::Duration::from_secs_f32(1.0 / animation_speed as f32)
@@ -163,17 +163,18 @@ fn main() -> Result<(), Box<dyn Error>> {
             {
                 write_frame_to_stream(frame, position, &mut buff_writer)?;
             }
-        }
-        let now = std::time::Instant::now();
-        let delta_t = now - last_time;
-        last_time = now;
 
-        x_position_subpixel += movement_speed as f32 * delta_t.as_secs_f32();
-        if position.x >= canvas_size.0 {
-            x_position_subpixel = 0.0;
-            bar.reset();
-        } else {
-            bar.set_position(position.x as u64);
+            let now = std::time::Instant::now();
+            let delta_t = now - last_time;
+            last_time = now;
+
+            x_position_subpixel += movement_speed as f32 * delta_t.as_secs_f32();
+            if position.x >= canvas_size.0 {
+                x_position_subpixel = 0.0;
+                bar.reset();
+            } else {
+                bar.set_position(position.x as u64);
+            }
         }
     }
 }
