@@ -10,3 +10,4 @@ clap = { version = "4.5.19", features = ["derive"] }
 console = "0.15.8"
 image = "0.25.2"
 indicatif = "0.17.8"
+tiny_http = "0.12.0"

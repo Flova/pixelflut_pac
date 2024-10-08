@@ -6,7 +6,9 @@ use image::{AnimationDecoder, Rgba};
 use std::error::Error;
 use std::io::{self, BufRead, Cursor, Write};
 use std::net::TcpStream;
+use std::str::FromStr;
 use std::sync::mpsc::channel;
+use tiny_http::{Header, Response, Server, StatusCode};
 
 #[derive(Copy, Clone)]
 struct Coordinates {
@@ -145,8 +147,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let (direction_tx, direction_rx) = channel();
 
-    let direction_tx_socket = direction_tx.clone();
-
+    let direction_tx_console = direction_tx.clone();
     let _input_thread = std::thread::spawn(move || {
         let term = Term::stdout();
         loop {
@@ -159,21 +160,28 @@ fn main() -> Result<(), Box<dyn Error>> {
                 'd' => Direction::Right,
                 _ => continue,
             };
-            direction_tx
+            direction_tx_console
                 .send(direction)
                 .expect("Failed to move keypress to main thread");
         }
     });
 
+    let direction_tx_socket = direction_tx.clone();
     let _input_socket_thread = std::thread::spawn(move || {
-        let listener =
-            std::net::TcpListener::bind("0.0.0.0:1234").expect("Failed to bind to socket");
+        let listener = match std::net::TcpListener::bind("0.0.0.0:1234") {
+            Ok(listener) => listener,
+            Err(e) => {
+                eprintln!("Socket based control is unavailable: {}", e);
+                return;
+            }
+        };
         let mut connection_pool = Vec::new();
         for stream in listener.incoming() {
             let stream = stream.expect("Failed to get stream");
+            let peer = stream.peer_addr().expect("Failed to get peer address");
             println!(
                 "Remote control connected. (IP: {} | Connection: {})",
-                stream.peer_addr().unwrap(),
+                peer,
                 connection_pool.len()
             );
             let tx_handle = direction_tx_socket.clone();
@@ -188,10 +196,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
                     // Break if the connection is closed
                     if buffer.is_empty() {
-                        println!(
-                            "Remote control disconnected! (IP: {})",
-                            stream.peer_addr().unwrap()
-                        );
+                        println!("Remote control disconnected! (IP: {})", peer);
                         break;
                     }
 
@@ -207,6 +212,54 @@ fn main() -> Result<(), Box<dyn Error>> {
                         .expect("Failed to move socket input to main thread");
                 }
             }));
+        }
+    });
+
+    let direction_tx_web = direction_tx.clone();
+    let _input_web_thread = std::thread::spawn(move || {
+        let server = match Server::http("0.0.0.0:8080") {
+            Ok(server) => server,
+            Err(e) => {
+                eprintln!("Web based control is unavailable: {}", e);
+                return;
+            }
+        };
+        for request in server.incoming_requests() {
+            let url = request.url();
+            let method = request.method();
+            match (method.as_str(), url) {
+                ("GET", "/") => {
+                    let response = Response::from_string(include_str!("index.html"))
+                        .with_status_code(200)
+                        .with_header(Header::from_str("Content-Type: text/html").unwrap());
+                    request.respond(response).unwrap();
+                }
+                // Match the URL substring and method
+                ("POST", cmd) => {
+                    let direction = match cmd {
+                        "/w" => Some(Direction::Up),
+                        "/a" => Some(Direction::Left),
+                        "/s" => Some(Direction::Down),
+                        "/d" => Some(Direction::Right),
+                        _ => None,
+                    };
+                    if let Some(direction) = direction {
+                        direction_tx_web
+                            .send(direction)
+                            .expect("Failed to move web input to main thread");
+                        request
+                            .respond(Response::empty(StatusCode::from(200)))
+                            .unwrap();
+                    } else {
+                        let response = Response::from_string("404 Not Found").with_status_code(404);
+                        request.respond(response).unwrap();
+                    }
+                }
+                _ => {
+                    let response = Response::from_string("404 Not Found").with_status_code(404);
+                    request.respond(response).unwrap();
+                }
+            }
         }
     });
 

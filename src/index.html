@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Pac Control</title>
+    <style>
+        body {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            margin: 0;
+            font-family: Arial, sans-serif;
+        }
+
+        .button-container {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            grid-template-rows: repeat(3, 1fr);
+            grid-template-areas:
+                ". up ."
+                "left . right"
+                ". down .";
+            gap: 10px;
+            width: 100%;
+            max-width: 400px;
+            margin-top: 4em;
+        }
+
+        .button-container button {
+            width: 100%;
+            padding: 15px;
+            font-size: 20px;
+            background-color: #f0f0f0;
+            border: 2px solid #ccc;
+            border-radius: 5px;
+            cursor: pointer;
+        }
+
+        .button-container button:active {
+            background-color: #ddd;
+        }
+
+        /* Positioning buttons in specific grid areas */
+        .left {
+            grid-area: left;
+        }
+        .up {
+            grid-area: up;
+        }
+        .right {
+            grid-area: right;
+        }
+        .down {
+            grid-area: down;
+        }
+    </style>
+</head>
+<body>
+    <div>
+        <h1 style="text-align: center;">Pac Control</h1>
+        <div class="button-container">
+            <!-- Empty corners and center, only directional buttons -->
+            <button class="left" onclick="fetch(`/a`, { method: 'POST' });">LEFT</button>
+            <button class="up" onclick="fetch(`/w`, { method: 'POST' });">UP</button>
+            <button class="right" onclick="fetch(`/d`, { method: 'POST' });">RIGHT</button>
+            <button class="down" onclick="fetch(`/s`, { method: 'POST' });">DOWN</button>
+        </div>
+    </div>
+</body>
+</html>
